@@ -153,6 +153,32 @@ plt.show()
 ## 📔 Jupyter Notebook Examples
 See the [example folder](example) for more examples on common tasks, e.g. visualizing forecasts, predicting from pandas DataFrame, etc.
 
+## 🚀 Crypto Fine-tuning SOTA
+
+We provide a state-of-the-art implementation for cryptocurrency time series forecasting with Bayesian uncertainty quantification. This implementation combines Moirai-MoE with advanced Bayesian techniques specifically designed for crypto markets.
+
+### Key Features
+- **Dataset Unification**: All crypto assets trained together with anonymization
+- **Bayesian Uncertainty**: Epistemic and aleatoric uncertainty decomposition 
+- **Cyclical Features**: Explicit time-based features (hour, day, week cycles)
+- **Window Normalization**: Relative price changes focus on patterns
+- **Advanced Monitoring**: Real-time Bayesian metrics and calibration
+
+### Quick Start
+```shell
+# Validate the complete SOTA pipeline
+python scripts/crypto/validate_sota_pipeline.py
+
+# Run fine-tuning with advanced CLI
+python -m uni2ts.cli.crypto_bayesian \
+    --config configs/crypto/finetune_bayesian_moe.yaml \
+    --data_path ./binance_data
+```
+
+### Documentation
+- **[CRYPTO_README.md](CRYPTO_README.md)** - Complete SOTA documentation
+- **[KAGGLE_FINETUNING_TUTORIAL.md](KAGGLE_FINETUNING_TUTORIAL.md)** - Step-by-step Kaggle GPU P100 tutorial
+
 ## 💻 Command Line Interface
 We provide several scripts which act as a [command line interface](cli) to easily run fine-tuning, evaluation, and even pre-training jobs. 
 [Configurations](cli/conf) are managed with the [Hydra](https://hydra.cc/) framework.
@@ -273,6 +299,6 @@ If you're using this repository in your research or applications, please cite us
 
 ## Ethical Considerations
 
-This release is for research purposes only in support of an academic paper. Our models, datasets, and code are not specifically designed or evaluated for all downstream purposes. We strongly recommend users evaluate and address potential concerns related to accuracy, safety, and fairness before deploying this model. We encourage users to consider the common limitations of AI, comply with applicable laws, and leverage best practices when selecting use cases, particularly for high-risk scenarios where errors or misuse could significantly impact people’s lives, rights, or safety. For further guidance on use cases, refer to our AUP and AI AUP. 
+This release is for research purposes only in support of an academic paper. Our models, datasets, and code are not specifically designed or evaluated for all downstream purposes. We strongly recommend users evaluate and address potential concerns related to accuracy, safety, and fairness before deploying this model. We encourage users to consider the common limitations of AI, comply with applicable laws, and leverage best practices when selecting use cases, particularly for high-risk scenarios where errors or misuse could significantly impact people’s lives, rights, or safety. For further guidance on use cases, refer to our AUP and AI AUP.
 
 

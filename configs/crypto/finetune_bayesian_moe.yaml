@@ -1,0 +1,217 @@
+# Configuração SOTA para Fine-tuning Crypto com Moirai-MoE + Bayesiano
+# UPGRADE BOOST.MD: Todas as melhorias implementadas
+
+defaults:
+  - model: moirai_moe_base  # UPGRADE: Moirai-MoE para dataset unificado
+  - _self_
+
+# Identificação do experimento
+run_name: crypto_bayesian_moe_sota_v1
+experiment_name: "MoiraiBayesianCrypto"
+seed: 42
+tf32: true
+compile: false
+
+# === MODELO MOIRAI-MOE COM CABEÇA BAYESIANA ===
+model:
+  _target_: uni2ts.model.moirai.MoiraiForecast
+  
+  # Modelo base MoE pré-treinado
+  pretrained_model_name_or_path: "Salesforce/moirai-moe-1.0-R-base"  # MoE architecture
+  
+  # Configurações de contexto
+  context_length: 2048      # 2048 minutos (~34 horas de contexto)
+  prediction_length: 60     # Próximos 60 minutos
+  patch_size: 8            # Otimizado para M1
+  num_samples: 100         # Amostras para inferência
+  
+  # === CABEÇA BAYESIANA SOTA (CONFIRMADO BOOST.MD) ===
+  prediction_head:
+    _target_: uni2ts.model.crypto.bayesian_head.BayesianPredictionHead
+    d_model: ${model.d_model}
+    prediction_length: ${model.prediction_length}
+    mc_dropout_rate: 0.15        # Dropout mais alto para incerteza
+    num_mc_samples: 100          # Amostras Monte Carlo
+    use_variational_weights: true # CONFIRMADO: Pesos variacionais mantidos
+    use_temporal_attention: true  # Attention para interpretabilidade
+    student_t_df: 4.0            # Heavy tails para crypto
+    confidence_levels: [0.8, 0.9, 0.95, 0.99]
+  
+  # Freeze do backbone (opcional - apenas fine-tune da cabeça)
+  freeze_backbone: false  # Set true para fine-tune apenas cabeça Bayesiana
+
+# === LOSS FUNCTION BAYESIANA SOTA (CONFIRMADO BOOST.MD) ===
+loss_func:
+  _target_: uni2ts.loss.bayesian_elbo.BayesianELBOLoss  # CONFIRMADO: SOTA loss function
+  likelihood_weight: 1.0
+  kl_weight: 1e-4              # Peso KL otimizado para convergência
+  kl_annealing: true           # Annealing schedule para estabilidade
+  kl_annealing_epochs: 50      # Annealing mais rápido
+  use_student_t: true          # Heavy tails para crypto
+  student_t_df_min: 2.1        # Garantir variância finita
+  reduction: "mean"
+
+# === DADOS UNIFICADOS E ANÔNIMOS (UPGRADE BOOST.MD) ===
+data:
+  _target_: uni2ts.data.builder.crypto.CryptoDatasetBuilder
+  data_path: "./binance_data"    # Pasta dos dados baixados
+  
+  # Configuração SOTA (BOOST.MD)
+  config:
+    context_length: ${model.context_length}
+    prediction_length: ${model.prediction_length}
+    unified_dataset: true        # UPGRADE: Dataset unificado
+    anonymous_training: true     # UPGRADE: Remove item_id durante treinamento
+    window_normalization: true   # UPGRADE: (valor[t] / valor[t=0]) - 1
+    cyclical_features: true      # UPGRADE: Features sin/cos explícitas
+    min_sequence_length: 2048
+    validation_split: 0.2
+    
+    # Ativos para unificação
+    target_assets: ["BTCUSDT", "ETHUSDT", "ETHBTC", "BNBUSDT"]
+
+# Dados de validação (mesmo builder, split diferente)
+val_data:
+  _target_: uni2ts.data.builder.crypto.CryptoDatasetBuilder
+  data_path: ${data.data_path}
+  config: ${data.config}
+
+# === TREINAMENTO ===
+trainer:
+  max_epochs: 100             # Mais épocas para convergência Bayesiana
+  gradient_clip_val: 1.0      # Gradient clipping importante para ELBO
+  accumulate_grad_batches: 4  # Acumular gradientes para batch efetivo maior
+  precision: 16               # Mixed precision para eficiência
+  check_val_every_n_epoch: 5  # Validação a cada 5 épocas
+  log_every_n_steps: 50       # Log frequente para monitorar ELBO
+  
+  # Configurações para GPU
+  devices: 1
+  accelerator: "gpu"
+  strategy: "auto"
+
+# === DATALOADERS ===
+train_dataloader:
+  batch_size: 16              # Menor batch para Bayesiano (mais estável)
+  shuffle: true
+  num_workers: 4
+  pin_memory: true
+  drop_last: true
+
+val_dataloader:
+  batch_size: 32              # Batch maior para validação
+  shuffle: false
+  num_workers: 4
+  pin_memory: true
+
+# === OTIMIZAÇÃO ===
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1e-4                    # Learning rate conservador para Bayesiano
+  weight_decay: 1e-5          # Regularização L2 leve
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+# Learning rate scheduler
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+  T_0: 10                     # Restart a cada 10 épocas
+  T_mult: 2                   # Aumentar período progressivamente
+  eta_min: 1e-6              # LR mínimo
+
+# === CALLBACKS ===
+callbacks:
+  # Model checkpoint (monitora ELBO)
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: "./checkpoints"
+    filename: "crypto_bayesian_moe_{epoch:03d}_{val_loss:.4f}"
+    monitor: "val/ELBO"          # CONFIRMADO: Monitor Bayesiano
+    mode: "min"
+    save_top_k: 3
+    save_last: true
+    verbose: true
+  
+  # Early stopping
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/ELBO"          # CONFIRMADO: Early stopping Bayesiano
+    mode: "min"
+    patience: 15                 # Mais paciência para Bayesiano
+    min_delta: 1e-4
+    verbose: true
+  
+  # Learning rate monitor
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: "step"
+  
+  # CONFIRMADO: Callback específico para monitorar incerteza (SOTA implementado)
+  - _target_: uni2ts.callbacks.bayesian_uncertainty.BayesianUncertaintyMonitor
+    log_attention_weights: true
+    uncertainty_threshold: 0.05
+    log_interval: 100
+    save_plots: true
+    plot_dir: "./uncertainty_plots"
+
+# === LOGGING ===
+logger:
+  _target_: lightning.pytorch.loggers.WandbLogger
+  project: "moirai-crypto-bayesian"
+  name: ${run_name}
+  tags: ["crypto", "bayesian", "moirai-moe", "sota"]
+  log_model: false  # Não fazer upload automático (modelos grandes)
+
+# === MÉTRICAS DE AVALIAÇÃO ===
+metrics:
+  # Métricas de forecasting
+  - _target_: uni2ts.eval_util.metrics.MAE
+  - _target_: uni2ts.eval_util.metrics.MAPE
+  - _target_: uni2ts.eval_util.metrics.QuantileLoss
+    quantiles: [0.1, 0.5, 0.9]
+  
+  # Métricas Bayesianas específicas (SOTA implementadas)
+  - _target_: uni2ts.eval_util.bayesian_metrics.BayesianCalibration
+    n_bins: 15
+  - _target_: uni2ts.eval_util.bayesian_metrics.UncertaintyDecomposition
+  - _target_: uni2ts.eval_util.bayesian_metrics.PredictionSharpness
+  - _target_: uni2ts.eval_util.bayesian_metrics.PredictionIntervalCoverage
+
+# === CONFIGURAÇÕES ESPECÍFICAS PARA MODELO DE PREVISÃO ===
+prediction_specific:
+  # Configurações de calibração Bayesiana
+  calibration_config:
+    history_window: 1000        # Janela para monitorar calibração
+    recalibration_frequency: 100 # Frequência de recalibração
+    confidence_threshold: 0.8   # Threshold para alertas de incerteza
+  
+  # Configurações de monitoramento de incerteza
+  uncertainty_monitoring:
+    epistemic_alerts: true      # Alertas para alta incerteza epistêmica
+    calibration_tracking: true  # Tracking contínuo de calibração
+    attention_analysis: true    # Análise de pesos de attention
+
+# === REPRODUTIBILIDADE ===
+# Garantir resultados reprodutíveis para pesquisa
+deterministic: true
+benchmark: false  # Desabilitar para determinismo
+num_sanity_val_steps: 0  # Pular sanity check para speed
+
+# === CONFIGURAÇÕES DE DESENVOLVIMENTO ===
+# Para debug e desenvolvimento
+debug:
+  fast_dev_run: false         # Set true para teste rápido
+  overfit_batches: 0          # Set >0 para testar overfitting
+  limit_train_batches: 1.0    # Usar subset para teste
+  limit_val_batches: 1.0
+  profiler: null              # Usar "simple" ou "advanced" para profiling
+
+# === NOTAS DE CONFIGURAÇÃO ===
+# Esta configuração implementa TODAS as melhorias do BOOST.MD:
+# ✅ Moirai-MoE para dataset unificado
+# ✅ Dataset anônimo (sem item_id) 
+# ✅ Normalização por janela
+# ✅ Features cíclicas explícitas
+# ✅ BayesianPredictionHead mantida completa
+# ✅ BayesianELBOLoss mantida completa
+# ✅ Configurações otimizadas para PREVISÃO crypto (não trading)
+# 
+# NOTA: Este modelo produz apenas PREVISÕES + INCERTEZA.
+# Decisões de trading serão feitas por modelo RL separado.

@@ -1,0 +1,90 @@
+# Requirements SOTA para Fine-tuning Crypto com Moirai-MoE + Bayesiano
+# Inclui todas as dependências para implementação do BOOST.MD
+
+# === CORE DEEP LEARNING ===
+torch>=2.0.0
+torchvision>=0.15.0
+pytorch-lightning>=2.0.0
+transformers>=4.30.0
+
+# === DATASETS E DATA PROCESSING ===
+datasets>=2.14.0
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0.0
+polars>=0.18.0  # Para processamento rápido de dados grandes
+
+# === CONFIGURAÇÃO E LOGGING ===
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+wandb>=0.15.0
+tensorboard>=2.13.0
+
+# === MÉTRICAS E AVALIAÇÃO ===
+scikit-learn>=1.3.0
+scipy>=1.10.0
+statsmodels>=0.14.0
+
+# === CRYPTO E TRADING ===
+python-binance>=1.0.17
+ccxt>=4.0.0
+requests>=2.31.0
+
+# === VISUALIZAÇÃO ===
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# === OTIMIZAÇÃO E PERFORMANCE ===
+numba>=0.57.0  # JIT compilation para features cíclicas
+cython>=0.29.0
+
+# === UTILS ===
+tqdm>=4.65.0
+rich>=13.0.0  # Pretty printing
+typer>=0.9.0  # CLI enhancement
+pydantic>=2.0.0  # Data validation
+
+# === TESTING ===
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# === DESENVOLVIMENTO ===
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# === JUPYTER E NOTEBOOKS ===
+jupyter>=1.0.0
+jupyterlab>=4.0.0
+ipywidgets>=8.0.0
+
+# === ESPECÍFICOS PARA BOOST.MD ===
+# Bibliotecas para implementação das melhorias SOTA
+
+# Processamento temporal eficiente
+fastparquet>=0.8.0  # Leitura rápida de parquet
+pytz>=2023.3  # Timezone handling para features cíclicas
+
+# Distribuições e estatística Bayesiana
+torch-audiomentations>=0.11.0  # Para augmentations se necessário
+
+# === OPTIONAL: ACELERAÇÃO ===
+# Descomente se disponível:
+# nvidia-ml-py>=11.5  # Monitor GPU
+# triton>=2.0.0  # Kernels otimizados
+
+# === VERSÕES ESPECÍFICAS PARA COMPATIBILIDADE ===
+# Garantir compatibilidade com uni2ts
+huggingface-hub>=0.16.0
+tokenizers>=0.13.0
+safetensors>=0.3.0
+
+# === PARA PRODUÇÃO ===
+# Ferramentas para deploy e monitoramento
+fastapi>=0.100.0  # API para inferência
+uvicorn>=0.22.0   # ASGI server
+pydantic-settings>=2.0.0  # Settings management
+redis>=4.6.0      # Cache para inferência
+celery>=5.3.0     # Task queue para processamento async
