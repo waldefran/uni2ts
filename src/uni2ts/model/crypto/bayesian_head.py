@@ -18,8 +18,6 @@ from typing import Optional, Tuple, Dict, List
 from torch.distributions import StudentT, Normal
 from dataclasses import dataclass
 
-from uni2ts.common.torch_util import as_dict
-
 
 @dataclass
 class BayesianPredictionOutput:
@@ -197,8 +195,16 @@ class BayesianPredictionHead(nn.Module):
                 attention_weights = None
             
             # 2. Agregação temporal (média ponderada ou pooling)
-            if self.use_temporal_attention:
+            if self.use_temporal_attention and attention_weights is not None:
                 # Usar attention weights para pooling ponderado
+                # attention_weights shape: [batch, seq_len] ou [batch, heads, seq_len]
+                if attention_weights.dim() == 3:
+                    attention_weights = attention_weights.mean(dim=1)  # [batch, seq_len]
+                
+                # Normalizar attention weights
+                attention_weights = F.softmax(attention_weights, dim=-1)
+                
+                # Pooling ponderado: [batch, seq_len, d_model] * [batch, seq_len, 1] -> [batch, d_model]
                 attn_pooled = torch.sum(attended_reprs * attention_weights.unsqueeze(-1), dim=1)
             else:
                 # Pooling simples
@@ -210,8 +216,8 @@ class BayesianPredictionHead(nn.Module):
             h = self.activation(h)
             h = self.mc_dropout(h) if training or num_samples > 1 else h
             
-            h = self.layer_norm2(h)
             h = self.variational_linear2(h)
+            h = self.layer_norm2(h)
             h = self.activation(h)
             h = self.feature_dropout(h)
             
@@ -259,20 +265,28 @@ class BayesianPredictionHead(nn.Module):
         # 4. Incerteza total
         total_uncertainty = epistemic_uncertainty + aleatoric_uncertainty
         
-        # 5. Intervalos de confiança usando distribuição Student-T
+        # 5. Intervalos de confiança usando distribuição Student-T - CORREÇÃO: usar scipy.stats.t
         confidence_intervals = {}
         mean_scale = torch.mean(scale_samples, dim=-1)
         mean_df = torch.mean(df_samples, dim=-1)
         
         for conf_level in self.confidence_levels:
-            # Quantis da distribuição Student-T
+            # Quantis da distribuição Student-T usando scipy para precisão
             alpha = 1 - conf_level
-            # Aproximação para quantis (pode ser melhorada com scipy.stats)
-            z_score = torch.ones_like(mean_prediction) * torch.tensor(
-                {0.8: 1.282, 0.9: 1.645, 0.95: 1.96, 0.99: 2.576}.get(conf_level, 1.96)
-            )
+            try:
+                from scipy.stats import t
+                # Usar graus de liberdade médios para cada posição
+                t_critical = torch.tensor([
+                    t.ppf(1 - alpha/2, df.item()) if df.item() > 0 else 1.96 
+                    for df in mean_df.flatten()
+                ]).reshape(mean_df.shape).to(mean_df.device)
+            except ImportError:
+                # Fallback para aproximação z-score se scipy não disponível
+                t_critical = torch.ones_like(mean_prediction) * torch.tensor(
+                    {0.8: 1.282, 0.9: 1.645, 0.95: 1.96, 0.99: 2.576}.get(conf_level, 1.96)
+                )
             
-            margin = z_score * mean_scale * torch.sqrt(total_uncertainty)
+            margin = t_critical * mean_scale * torch.sqrt(total_uncertainty)
             confidence_intervals[f"{int(conf_level*100)}%"] = {
                 "lower": mean_prediction - margin,
                 "upper": mean_prediction + margin

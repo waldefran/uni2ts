@@ -15,9 +15,13 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from typing import Dict, Optional, List
 import numpy as np
-import matplotlib.pyplot as plt
-import wandb
 from pathlib import Path
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 from uni2ts.model.crypto.bayesian_head import BayesianPredictionOutput
 
@@ -74,14 +78,19 @@ class BayesianUncertaintyMonitor(Callback):
         # Verificar se o modelo tem cabeça Bayesiana
         if not hasattr(pl_module, 'prediction_head'):
             return
-            
-        # Executar forward pass para obter predições Bayesianas
-        with torch.no_grad():
-            # Assumindo que o modelo retorna BayesianPredictionOutput
-            if hasattr(outputs, 'epistemic_uncertainty'):
-                self._process_bayesian_output(outputs, trainer.global_step)
+        
+        # Buscar prediction_output no dicionário retornado pelo validation_step
+        prediction_output = None
+        if isinstance(outputs, dict) and 'prediction_output' in outputs:
+            prediction_output = outputs['prediction_output']
+        elif hasattr(outputs, 'epistemic_uncertainty'):
+            prediction_output = outputs
+        
+        if prediction_output is not None:
+            with torch.no_grad():
+                self._process_bayesian_output(prediction_output, trainer.global_step, trainer)
     
-    def _process_bayesian_output(self, output: BayesianPredictionOutput, global_step: int):
+    def _process_bayesian_output(self, output: BayesianPredictionOutput, global_step: int, trainer: pl.Trainer = None):
         """Processa saída Bayesiana e registra métricas"""
         
         # Calcular métricas de incerteza
@@ -115,9 +124,9 @@ class BayesianUncertaintyMonitor(Callback):
         if self.log_attention_weights and output.attention_weights is not None:
             self._process_attention_weights(output.attention_weights, metrics)
         
-        # Registrar métricas
-        if hasattr(pl.trainer, 'logger') and hasattr(pl.trainer.logger, 'log_metrics'):
-            pl.trainer.logger.log_metrics(metrics, step=global_step)
+        # Registrar métricas - CORREÇÃO: usar trainer do argumento
+        if trainer is not None and hasattr(trainer, 'logger') and trainer.logger is not None:
+            trainer.logger.log_metrics(metrics, step=global_step)
         
         self.step_count += 1
         
@@ -147,10 +156,15 @@ class BayesianUncertaintyMonitor(Callback):
         self.attention_history.append(entropy_mean)
     
     def _create_uncertainty_plots(self, global_step: int):
-        """Cria visualizações de incerteza"""
+        """Cria visualizações de incerteza - CORREÇÃO: matplotlib local"""
         
         if len(self.uncertainty_history["total"]) < 10:
             return  # Poucos dados para plotar
+        
+        # Importar matplotlib localmente para evitar efeitos globais
+        import matplotlib
+        matplotlib.use('Agg')  # Backend não-GUI apenas para esta função
+        import matplotlib.pyplot as plt
         
         fig, axes = plt.subplots(2, 2, figsize=(12, 8))
         
@@ -197,10 +211,11 @@ class BayesianUncertaintyMonitor(Callback):
         plt.close()
         
         # Log para WandB se disponível
-        try:
-            wandb.log({"uncertainty_analysis": wandb.Image(str(plot_path))}, step=global_step)
-        except:
-            pass  # WandB não disponível
+        if WANDB_AVAILABLE:
+            try:
+                wandb.log({"uncertainty_analysis": wandb.Image(str(plot_path))}, step=global_step)
+            except:
+                pass  # WandB não disponível
     
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
         """Resumo das métricas ao final de cada época"""

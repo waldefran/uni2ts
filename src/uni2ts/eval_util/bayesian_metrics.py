@@ -16,6 +16,8 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from scipy import stats
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
 import matplotlib.pyplot as plt
 
 from uni2ts.model.crypto.bayesian_head import BayesianPredictionOutput

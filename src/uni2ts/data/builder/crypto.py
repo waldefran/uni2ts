@@ -18,7 +18,7 @@ from typing import List, Dict, Optional, Tuple, Union
 from datetime import datetime
 import pickle
 from datasets import Dataset, Features, Value, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from uni2ts.data.builder import DatasetBuilder
 
@@ -35,12 +35,8 @@ class CryptoConfig:
     min_sequence_length: int = 2048 # Mínimo de dados por sequência
     validation_split: float = 0.2   # 20% para validação
     
-    # Assets para unificação
-    target_assets: List[str] = None
-    
-    def __post_init__(self):
-        if self.target_assets is None:
-            self.target_assets = ["BTCUSDT", "ETHUSDT", "ETHBTC", "BNBUSDT"]
+    # Assets para unificação - CORREÇÃO: configurável via YAML
+    target_assets: List[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "ETHBTC", "BNBUSDT"])
 
 
 class CryptoDatasetBuilder(DatasetBuilder):

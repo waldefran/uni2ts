@@ -10,6 +10,7 @@ SOTA implementado:
 """
 
 import os
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 import hydra
@@ -188,21 +189,21 @@ def validate_crypto_bayesian_config(cfg: DictConfig) -> None:
     if cfg.model.get('prediction_head', {}).get('_target_'):
         head_target = cfg.model.prediction_head._target_
         if 'BayesianPredictionHead' not in head_target:
-            print(f"⚠️  Aviso: Cabeça de predição não é Bayesiana: {head_target}")
+            logging.warning(f"Cabeça de predição não é Bayesiana: {head_target}")
     
     # Verificar loss function
     if cfg.model.get('loss_func', {}).get('_target_'):
         loss_target = cfg.model.loss_func._target_
         if 'BayesianELBOLoss' not in loss_target:
-            print(f"⚠️  Aviso: Loss function não é Bayesiana: {loss_target}")
+            logging.warning(f"Loss function não é Bayesiana: {loss_target}")
     
     # Verificar dataset builder
     if cfg.data.get('_target_'):
         data_target = cfg.data._target_
         if 'CryptoDatasetBuilder' not in data_target:
-            print(f"⚠️  Aviso: Dataset builder não é crypto-específico: {data_target}")
+            logging.warning(f"Dataset builder não é crypto-específico: {data_target}")
     
-    print("✅ Configuração Bayesiana validada com sucesso")
+    logging.info("Configuração Bayesiana validada com sucesso")
 
 
 def run_crypto_bayesian_training(cfg: DictConfig) -> Dict[str, Any]:
