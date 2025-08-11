@@ -52,7 +52,10 @@ class BayesianUncertaintyMonitor(Callback):
         self.log_interval = log_interval
         self.save_plots = save_plots
         self.plot_dir = Path(plot_dir)
-        self.plot_dir.mkdir(exist_ok=True)
+        
+        # Criar diretório de plots se necessário
+        if self.save_plots:
+            self.plot_dir.mkdir(parents=True, exist_ok=True)
         
         # Histórico de métricas
         self.uncertainty_history = {
@@ -235,8 +238,8 @@ class BayesianUncertaintyMonitor(Callback):
             "uncertainty_epoch/high_uncertainty_pct": np.mean([u > self.uncertainty_threshold for u in recent_uncertainty]) * 100
         }
         
-        # Log métricas da época
-        if hasattr(trainer, 'logger'):
+        # Log métricas da época usando o logger do trainer
+        if trainer.logger:
             trainer.logger.log_metrics(epoch_metrics, step=trainer.global_step)
     
     def get_uncertainty_summary(self) -> Dict:
