@@ -94,11 +94,16 @@ class CryptoDatasetBuilder(DatasetBuilder):
         # 4. Criar sequências de treino
         sequences = self._create_sequences(enhanced_data)
         
-        # 5. Split treino/validação
-        train_sequences, val_sequences = self._split_data(sequences)
+        # 5. Split treino/validação/teste
+        train_sequences, val_sequences, test_sequences = self._split_data(sequences)
         
         # 6. Selecionar split apropriado
-        selected_sequences = train_sequences if split == "train" else val_sequences
+        if split == "train":
+            selected_sequences = train_sequences
+        elif split == "validation":
+            selected_sequences = val_sequences
+        else:  # test
+            selected_sequences = test_sequences
         
         # 7. Converter para formato HuggingFace
         hf_dataset = self._create_hf_dataset(selected_sequences, split)
@@ -392,31 +397,38 @@ class CryptoDatasetBuilder(DatasetBuilder):
         
         return feature_matrix.astype(np.float32)
     
-    def _split_data(self, sequences: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
-        """Split treino/validação temporal"""
+    def _split_data(self, sequences: List[Dict]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """Split treino/validação/teste temporal"""
         
         # Ordenar por timestamp se disponível
         sequences_with_time = [(seq, seq['start']) for seq in sequences if seq['start'] is not None]
         sequences_without_time = [seq for seq in sequences if seq['start'] is None]
         
         if sequences_with_time:
-            # Split temporal: últimos 20% para validação
+            # Split temporal: 60% treino, 20% validação, 20% teste
             sequences_with_time.sort(key=lambda x: x[1])
-            split_point = int(len(sequences_with_time) * (1 - self.config.validation_split))
+            total_len = len(sequences_with_time)
+            train_split = int(total_len * 0.6)
+            val_split = int(total_len * 0.8)
             
-            train_sequences = [seq for seq, _ in sequences_with_time[:split_point]]
-            val_sequences = [seq for seq, _ in sequences_with_time[split_point:]]
+            train_sequences = [seq for seq, _ in sequences_with_time[:train_split]]
+            val_sequences = [seq for seq, _ in sequences_with_time[train_split:val_split]]
+            test_sequences = [seq for seq, _ in sequences_with_time[val_split:]]
         else:
             # Split aleatório se não houver timestamps
             np.random.shuffle(sequences)
-            split_point = int(len(sequences) * (1 - self.config.validation_split))
-            train_sequences = sequences[:split_point]
-            val_sequences = sequences[split_point:]
+            total_len = len(sequences)
+            train_split = int(total_len * 0.6)
+            val_split = int(total_len * 0.8)
+            
+            train_sequences = sequences[:train_split]
+            val_sequences = sequences[train_split:val_split]
+            test_sequences = sequences[val_split:]
         
         # Adicionar sequências sem timestamp ao treino
         train_sequences.extend(sequences_without_time)
         
-        return train_sequences, val_sequences
+        return train_sequences, val_sequences, test_sequences
     
     def _create_hf_dataset(self, sequences: List[Dict], split: str) -> Dataset:
         """Converte sequências para formato HuggingFace Dataset"""
@@ -466,3 +478,36 @@ class CryptoDatasetBuilder(DatasetBuilder):
             'anonymous_training': self.config.anonymous_training
         }
         return info
+
+    def load_dataset(self, transform_map: dict = None) -> Dataset:
+        """
+        Implementação do método abstrato da classe base.
+        Carrega o dataset de treinamento com transformações aplicadas.
+        
+        Args:
+            transform_map: Mapa de transformações a aplicar (opcional)
+            
+        Returns:
+            Dataset de treinamento carregado
+        """
+        return self.build_dataset(split="train")
+    
+    def build_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:
+        """
+        Constrói e retorna os três datasets: treino, validação e teste.
+        
+        Returns:
+            Tuple contendo (train_dataset, val_dataset, test_dataset)
+        """
+        print("🏗️ Construindo datasets de treino, validação e teste...")
+        
+        train_dataset = self.build_dataset(split="train")
+        val_dataset = self.build_dataset(split="validation") 
+        test_dataset = self.build_dataset(split="test")
+        
+        print(f"✅ Datasets construídos:")
+        print(f"   🚂 Treino: {len(train_dataset)} amostras")
+        print(f"   🔬 Validação: {len(val_dataset)} amostras")
+        print(f"   🧪 Teste: {len(test_dataset)} amostras")
+        
+        return train_dataset, val_dataset, test_dataset
