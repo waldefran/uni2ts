@@ -1,3 +1,25 @@
+"""
+Binance Data Downloader SOTA - Otimizado para Dados de 1 Minuto
+
+Este módulo foi desenvolvido especificamente para baixar dados de criptomoedas 
+com resolução de 1 minuto da Binance, seguindo as melhores práticas para 
+machine learning em séries temporais financeiras.
+
+Características SOTA:
+- Exclusivamente dados de 1 minuto (m1) para máxima resolução temporal
+- Estrutura de paths otimizada para CryptoDatasetBuilder 
+- Detecção automática de formato de timestamp (ms/μs)
+- Conversão e validação robusta de dados
+- Salvamento em formato Parquet para eficiência
+- Tratamento de dados faltantes e inconsistências
+
+Uso:
+    from binanceDataloader import BinanceDataDownloader
+    
+    downloader = BinanceDataDownloader("output_dir")
+    results = downloader.download_all_symbols(["BTCUSDT", "ETHUSDT"], years_back=1)
+"""
+
 import requests
 import pandas as pd
 import zipfile
@@ -173,20 +195,36 @@ class BinanceDataDownloader:
         
         return results
 
-# Exemplo de uso
+# Uso direto da classe (otimizado para notebook/script)
 if __name__ == "__main__":
-    # PARÂMETROS CONFIGURÁVEIS
-    YEARS_BACK = 2  # Altere aqui a quantidade de anos
-    SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'ETHBTC']  # Símbolos para download
-    OUTPUT_DIR = "binance_data"  # Diretório de saída
+    # Configuração padrão SOTA para dados de 1 minuto
+    DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT']
+    DEFAULT_YEARS = 1.0
+    DEFAULT_OUTPUT_DIR = 'binance_data'
+    
+    print(f"🏆 BINANCE DATA DOWNLOADER - ESTADO DA ARTE (DADOS 1 MINUTO)")
+    print(f"=" * 65)
+    print(f"📊 Intervalo: 1 minuto (m1) - Estado da arte para crypto trading")
+    print(f"🎯 Símbolos padrão: {DEFAULT_SYMBOLS}")
+    print(f"📅 Período padrão: {DEFAULT_YEARS} anos")
+    print(f"📁 Saída padrão: {DEFAULT_OUTPUT_DIR}/")
+    print(f"=" * 65)
     
     # Criar downloader
-    downloader = BinanceDataDownloader(output_dir=OUTPUT_DIR)
+    downloader = BinanceDataDownloader(output_dir=DEFAULT_OUTPUT_DIR)
     
     # Executar downloads
     results = downloader.download_all_symbols(
-        symbols=SYMBOLS, 
-        years_back=YEARS_BACK
+        symbols=DEFAULT_SYMBOLS, 
+        years_back=DEFAULT_YEARS
     )
     
-    print(f"\n🎉 Download concluído! Arquivos salvos em '{OUTPUT_DIR}/'")
+    # Estatísticas finais
+    successful = sum(1 for df in results.values() if df is not None and not df.empty)
+    total_records = sum(len(df) for df in results.values() if df is not None and not df.empty)
+    
+    print(f"\n🎉 DOWNLOAD CONCLUÍDO!")
+    print(f"✅ {successful}/{len(DEFAULT_SYMBOLS)} símbolos baixados com sucesso")
+    print(f"📊 Total de {total_records:,} registros de 1 minuto")
+    print(f"📁 Arquivos salvos em '{DEFAULT_OUTPUT_DIR}/'")
+    print(f"🚀 Pronto para uso com CryptoDatasetBuilder!")
