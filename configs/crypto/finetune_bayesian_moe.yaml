@@ -1,5 +1,5 @@
 # Configuração SOTA para Fine-tuning Crypto com Moirai-MoE + Bayesiano
-# UPGRADE BOOST.MD: Todas as melhorias implementadas
+# UPGRADE: Todas as melhorias implementadas
 
 defaults:
   - model: moirai_moe_base  # UPGRADE: Moirai-MoE para dataset unificado
@@ -25,7 +25,7 @@ model:
   patch_size: 8            # Otimizado para M1
   num_samples: 100         # Amostras para inferência
   
-  # === CABEÇA BAYESIANA SOTA (CONFIRMADO BOOST.MD) ===
+  # === CABEÇA BAYESIANA SOTA  ===
   prediction_head:
     _target_: uni2ts.model.crypto.bayesian_head.BayesianPredictionHead
     d_model: ${model.d_model}
@@ -40,7 +40,7 @@ model:
   # Freeze do backbone (opcional - apenas fine-tune da cabeça)
   freeze_backbone: false  # Set true para fine-tune apenas cabeça Bayesiana
 
-# === LOSS FUNCTION BAYESIANA SOTA (CONFIRMADO BOOST.MD) ===
+# === LOSS FUNCTION BAYESIANA SOTA ===
 loss_func:
   _target_: uni2ts.loss.bayesian_elbo.BayesianELBOLoss  # CONFIRMADO: SOTA loss function
   likelihood_weight: 1.0
@@ -54,7 +54,7 @@ loss_func:
 # === DADOS UNIFICADOS E ANÔNIMOS (UPGRADE BOOST.MD) ===
 data:
   _target_: uni2ts.data.builder.crypto.CryptoDatasetBuilder
-  data_path: "./binance_data"    # Pasta dos dados baixados
+  data_path: "./binance_data"    # Pasta dos dados baixados (Kaggle: use variável BINANCE_DATA_DIR)
   
   # Configuração SOTA (BOOST.MD)
   config:
@@ -66,8 +66,9 @@ data:
     cyclical_features: true      # UPGRADE: Features sin/cos explícitas
     min_sequence_length: 2048
     validation_split: 0.2
+    dtype: 'float32'            # Tipo de dados otimizado para performance
     
-    # Ativos para unificação
+    # Ativos para unificação (ajustar conforme dados disponíveis)
     target_assets: ["BTCUSDT", "ETHUSDT", "ETHBTC", "BNBUSDT"]
 
 # Dados de validação (mesmo builder, split diferente)
