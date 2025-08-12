@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 import torch
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple, Union, Set
 from datetime import datetime
 import pickle
 from datasets import Dataset, Features, Value, Sequence
@@ -34,6 +34,7 @@ class CryptoConfig:
     cyclical_features: bool = True  # Features sin/cos (BOOST.MD)
     min_sequence_length: int = 2048 # Mínimo de dados por sequência
     validation_split: float = 0.2   # 20% para validação
+    dtype: str = 'float32'         # Tipo de dados para features numéricas
     
     # Assets para unificação - CORREÇÃO: configurável via YAML
     target_assets: List[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "ETHBTC", "BNBUSDT"])
@@ -59,12 +60,16 @@ class CryptoDatasetBuilder(DatasetBuilder):
         self.data_path = Path(data_path)
         self.config = config or CryptoConfig()
         
-        # Campos de dados de candles
-        self.candle_fields = [
+        # Campos de dados separados por tipo
+        self.numerical_fields = [
             'open', 'high', 'low', 'close', 'volume',
             'quote_asset_volume', 'number_of_trades',
             'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume'
         ]
+        
+        self.datetime_fields = ['open_time']
+        self.technical_fields: Set[str] = set()  # Será preenchido durante feature engineering
+        self.cyclical_fields: Set[str] = set()   # Será preenchido durante feature engineering
         
         # Cache para dados processados
         self._processed_cache = {}
@@ -116,6 +121,7 @@ class CryptoDatasetBuilder(DatasetBuilder):
         print("📥 Carregando dados brutos...")
         
         raw_data = {}
+        dtype_map = {field: self.config.dtype for field in self.numerical_fields}
         
         for asset in self.config.target_assets:
             asset_files = list(self.data_path.glob(f"**/{asset}*.parquet"))
@@ -128,21 +134,32 @@ class CryptoDatasetBuilder(DatasetBuilder):
             latest_file = sorted(asset_files)[-1]
             print(f"📁 Carregando {asset}: {latest_file}")
             
+            # Carregar com dtypes corretos
             df = pd.read_parquet(latest_file)
             
+            # Converter campos numéricos para dtype configurado
+            for field in self.numerical_fields:
+                if field in df.columns:
+                    df[field] = df[field].astype(self.config.dtype)
+            
+            # Garantir datetime
+            if 'open_time' in df.columns:
+                df['open_time'] = pd.to_datetime(df['open_time'])
+            
             # Validar campos obrigatórios
-            missing_fields = [f for f in self.candle_fields if f not in df.columns]
+            missing_fields = [f for f in self.numerical_fields if f not in df.columns]
             if missing_fields:
                 print(f"⚠️ Campos faltando para {asset}: {missing_fields}")
                 continue
             
-            # Garantir timestamp como datetime
-            if 'open_time' in df.columns:
-                df['open_time'] = pd.to_datetime(df['open_time'])
-                df = df.sort_values('open_time').reset_index(drop=True)
-            
+            df = df.sort_values('open_time').reset_index(drop=True)
             raw_data[asset] = df
             print(f"   ✅ {asset}: {len(df):,} registros")
+            
+            # Validar tipos de dados
+            print(f"   📊 Tipos de dados:")
+            for col in df.columns:
+                print(f"      {col}: {df[col].dtype}")
         
         return raw_data
     
@@ -162,6 +179,11 @@ class CryptoDatasetBuilder(DatasetBuilder):
             df_copy = df.copy()
             df_copy['_original_asset'] = asset_name  # Apenas para debugging/validação
             df_copy['_sequence_id'] = f"{asset_name}_{pd.Timestamp.now().strftime('%Y%m%d')}"
+            
+            # Garantir tipos de dados consistentes
+            for field in self.numerical_fields:
+                if field in df_copy.columns:
+                    df_copy[field] = df_copy[field].astype(self.config.dtype)
             
             # Validar sequência mínima
             if len(df_copy) < self.config.min_sequence_length:
@@ -189,308 +211,389 @@ class CryptoDatasetBuilder(DatasetBuilder):
         # 1. Features cíclicas explícitas (BOOST.MD)
         if self.config.cyclical_features:
             df_enhanced = self._add_cyclical_features(df_enhanced)
-        
-        # 2. Outras features derivadas
+            
+        # 2. Outras features técnicas, garantindo dtype correto
         df_enhanced = self._add_technical_features(df_enhanced)
+            
+        # 3. Normalização por janela (se configurado)
+        if self.config.window_normalization:
+            df_enhanced = self._apply_window_normalization(df_enhanced)
+        
+        # Validar tipos de dados após feature engineering
+        print("\n📊 Validando tipos de dados após feature engineering:")
+        for col in df_enhanced.columns:
+            if col not in ['open_time', '_original_asset', '_sequence_id']:
+                if df_enhanced[col].dtype != self.config.dtype:
+                    print(f"   ⚠️ Convertendo {col} de {df_enhanced[col].dtype} para {self.config.dtype}")
+                    df_enhanced[col] = df_enhanced[col].astype(self.config.dtype)
+                else:
+                    print(f"   ✅ {col}: {df_enhanced[col].dtype}")
         
         return df_enhanced
-    
+        
     def _add_cyclical_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Adiciona features temporais cíclicas explícitas (BOOST.MD)"""
+        """
+        Adiciona features temporais cíclicas explícitas (BOOST.MD)
+        Retorna todas as features cíclicas com dtype correto
+        """
         print("   🔄 Adicionando features cíclicas (sin/cos)...")
         
-        if 'open_time' not in df.columns:
-            print("   ⚠️ Coluna open_time não encontrada")
-            return df
+        df = df.copy()
         
         # Extrair componentes temporais
-        df['minute_of_hour'] = df['open_time'].dt.minute
-        df['hour_of_day'] = df['open_time'].dt.hour
-        df['day_of_week'] = df['open_time'].dt.dayofweek
+        df['_minute'] = df['open_time'].dt.minute
+        df['_hour'] = df['open_time'].dt.hour
+        df['_weekday'] = df['open_time'].dt.weekday
         
-        # Transformações cíclicas sin/cos
-        df['minute_sin'] = np.sin(2 * np.pi * df['minute_of_hour'] / 60)
-        df['minute_cos'] = np.cos(2 * np.pi * df['minute_of_hour'] / 60)
+        # Criar features cíclicas (sempre retorna float64)
+        for col, max_val in [('_minute', 60), ('_hour', 24), ('_weekday', 7)]:
+            # Converter para radianos
+            values_rad = 2 * np.pi * df[col] / max_val
+            
+            # Criar sin/cos e garantir dtype correto
+            sin_col = f"{col}_sin"
+            cos_col = f"{col}_cos"
+            
+            df[sin_col] = np.sin(values_rad).astype(self.config.dtype)
+            df[cos_col] = np.cos(values_rad).astype(self.config.dtype)
+            
+            # Registrar como feature cíclica
+            self.cyclical_fields.add(sin_col)
+            self.cyclical_fields.add(cos_col)
+            
+            # Remover coluna temporária
+            df = df.drop(columns=[col])
         
-        df['hour_sin'] = np.sin(2 * np.pi * df['hour_of_day'] / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * df['hour_of_day'] / 24)
-        
-        df['weekday_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
-        df['weekday_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
-        
-        # Remover features temporais originais (mantém apenas sin/cos)
-        df = df.drop(['minute_of_hour', 'hour_of_day', 'day_of_week'], axis=1)
-        
-        print("   ✅ Features cíclicas adicionadas: minute, hour, weekday (sin/cos)")
         return df
     
     def _add_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Adiciona features técnicas básicas"""
-        print("   📈 Adicionando features técnicas...")
+        """
+        Adiciona features técnicas mantendo dtype consistente
+        """
+        print("   📊 Adicionando features técnicas...")
         
-        # Returns
-        df['price_return'] = df['close'].pct_change()
-        df['volume_return'] = df['volume'].pct_change()
+        df = df.copy()
         
-        # Volatilidade (rolling std dos returns)
-        df['volatility_5m'] = df['price_return'].rolling(5).std()
-        df['volatility_15m'] = df['price_return'].rolling(15).std()
+        # 1. Returns - sempre usar astype para garantir dtype correto
+        # Log returns são mais estáveis numericamente
+        df['returns'] = (np.log(df['close']) - np.log(df['close'].shift(1))).astype(self.config.dtype)
+        df['returns_vol'] = (np.log(df['volume']) - np.log(df['volume'].shift(1))).astype(self.config.dtype)
         
-        # VWAP (Volume Weighted Average Price)
-        df['vwap'] = (df['close'] * df['volume']).rolling(20).sum() / df['volume'].rolling(20).sum()
+        # Registrar returns como technical features
+        self.technical_fields.add('returns')
+        self.technical_fields.add('returns_vol')
         
-        # Spread relativo
-        df['spread_ratio'] = (df['high'] - df['low']) / df['close']
+        # 2. Volatilidades
+        # Janelas curtas e longas para capturar diferentes horizontes
+        for window in [5, 10, 20]:
+            # Preço
+            col_name = f'volatility_{window}'
+            df[col_name] = df['returns'].rolling(window).std().astype(self.config.dtype)
+            self.technical_fields.add(col_name)
+            
+            # Volume
+            col_name = f'vol_volatility_{window}'
+            df[col_name] = df['returns_vol'].rolling(window).std().astype(self.config.dtype)
+            self.technical_fields.add(col_name)
         
-        # Volume ratio
-        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        # 3. Médias Móveis e Bandas
+        for window in [5, 10, 20]:
+            # SMA
+            col_name = f'sma_{window}'
+            df[col_name] = df['close'].rolling(window).mean().astype(self.config.dtype)
+            self.technical_fields.add(col_name)
+            
+            # Bandas de Bollinger (normalized)
+            sma = df['close'].rolling(window).mean()
+            std = df['close'].rolling(window).std()
+            
+            col_name = f'bb_upper_{window}'
+            df[col_name] = ((df['close'] - (sma + 2 * std)) / std).astype(self.config.dtype)
+            self.technical_fields.add(col_name)
+            
+            col_name = f'bb_lower_{window}'
+            df[col_name] = ((df['close'] - (sma - 2 * std)) / std).astype(self.config.dtype)
+            self.technical_fields.add(col_name)
+        
+        # 4. Range features
+        df['high_low_range'] = ((df['high'] - df['low']) / df['low']).astype(self.config.dtype)
+        self.technical_fields.add('high_low_range')
+        
+        df['close_open_range'] = ((df['close'] - df['open']) / df['open']).astype(self.config.dtype)  
+        self.technical_fields.add('close_open_range')
+        
+        # Preencher NaN com 0 e inf com valores grandes mas finitos
+        df = df.replace([np.inf, -np.inf], np.finfo(self.config.dtype).max)
+        df = df.fillna(0)
+        
+        print(f"   ✅ Features técnicas criadas: {len(self.technical_fields)} campos")
         
         return df
-    
-    def _create_sequences(self, df: pd.DataFrame) -> List[Dict]:
+        
+    def _apply_window_normalization(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Cria sequências de contexto + predição com normalização por janela (BOOST.MD)
+        Aplica normalização por janela (valor[t] / valor[t=0]) - 1
+        Mantém dtype consistente
         """
-        print("📦 Criando sequências com normalização por janela...")
+        print("   📈 Aplicando normalização por janela...")
+        
+        df = df.copy()
+        window_size = self.config.context_length
+        
+        # Lista de colunas para normalizar
+        cols_to_normalize = (
+            list(self.numerical_fields) + 
+            list(self.technical_fields) +
+            list(self.cyclical_fields)
+        )
+        
+        # Remover colunas que já são normalizadas ou não devem ser normalizadas
+        cols_to_normalize = [
+            col for col in cols_to_normalize 
+            if col in df.columns and 
+            not any(x in col for x in ['_sin', '_cos', 'returns', 'volatility'])
+        ]
+        
+        for col in cols_to_normalize:
+            # Usar rolling para pegar o primeiro valor de cada janela
+            ref_values = df[col].rolling(window_size, min_periods=1).apply(
+                lambda x: x.iloc[0] if len(x) > 0 else x.iloc[-1]
+            )
+            
+            # Aplicar normalização mantendo dtype
+            df[f"{col}_norm"] = ((df[col] / ref_values) - 1).astype(self.config.dtype)
+            
+            # Remover coluna original se não for uma das features principais
+            if col not in self.numerical_fields:
+                df = df.drop(columns=[col])
+        
+        return df
+        
+    def _split_data(self, sequences: List[dict]) -> Tuple[List[dict], List[dict], List[dict]]:
+        """
+        Split sequences into train/validation/test sets
+        Maintains temporal order and asset distribution
+        """
+        print(f"📊 Dividindo {len(sequences)} sequências em treino/validação/teste...")
+        
+        # Group sequences by asset to ensure balanced split
+        asset_sequences = {}
+        for seq in sequences:
+            asset = seq['asset']
+            if asset not in asset_sequences:
+                asset_sequences[asset] = []
+            asset_sequences[asset].append(seq)
+        
+        train_seqs, val_seqs, test_seqs = [], [], []
+        
+        for asset, seqs in asset_sequences.items():
+            # Sort by start time to maintain temporal order
+            seqs = sorted(seqs, key=lambda x: x['start_time'])
+            
+            # Calculate split indices
+            n_seqs = len(seqs)
+            val_split = int(n_seqs * (1 - self.config.validation_split - 0.1))  # 10% for test
+            test_split = int(n_seqs * (1 - 0.1))
+            
+            # Split maintaining temporal order
+            train_seqs.extend(seqs[:val_split])
+            val_seqs.extend(seqs[val_split:test_split])
+            test_seqs.extend(seqs[test_split:])
+            
+            print(f"   {asset}: {len(seqs[:val_split])}/{len(seqs[val_split:test_split])}/{len(seqs[test_split:])} (train/val/test)")
+        
+        print(f"✅ Split final: {len(train_seqs)}/{len(val_seqs)}/{len(test_seqs)} sequências")
+        return train_seqs, val_seqs, test_seqs
+        
+    def _create_sequences(self, df: pd.DataFrame) -> List[dict]:
+        """
+        Cria sequências de treino com tipos de dados consistentes
+        Otimizado para performance e memory usage
+        """
+        print("🔄 Criando sequências de treinamento...")
         
         sequences = []
-        context_len = self.config.context_length
-        pred_len = self.config.prediction_length
+        total_len = len(df)
+        step_size = self.config.prediction_length
         
-        # Campos que serão normalizados por janela
-        price_volume_fields = ['open', 'high', 'low', 'close', 'volume', 
-                              'quote_asset_volume', 'taker_buy_base_asset_volume', 
-                              'taker_buy_quote_asset_volume']
+        # Definir feature columns com prioridade explícita
+        feature_cols = self._get_feature_columns(df)
         
-        # Campos que não são normalizados (já são relativos ou cíclicos)
-        static_fields = [col for col in df.columns 
-                        if col not in price_volume_fields 
-                        and not col.startswith('_')
-                        and col != 'open_time']
+        print(f"   📊 Features selecionadas ({len(feature_cols)}): {feature_cols[:5]}...")
         
-        # Agrupar por sequência de ativo (se houver quebras temporais grandes)
-        sequence_groups = self._group_sequences(df)
-        
-        for group_df in sequence_groups:
-            group_len = len(group_df)
+        # Pre-process features matrix for efficiency
+        try:
+            features_matrix = df[feature_cols].to_numpy(dtype=self.config.dtype)
+            print(f"   ✅ Features matrix shape: {features_matrix.shape}")
+        except Exception as e:
+            print(f"   ❌ Erro criando features matrix: {e}")
+            # Fallback: force dtype conversion
+            features_matrix = df[feature_cols].astype(self.config.dtype).to_numpy()
             
-            # Criar sequências deslizantes
-            for i in range(0, group_len - context_len - pred_len + 1, pred_len):
-                context_end = i + context_len
-                pred_end = context_end + pred_len
-                
-                # Extrair janela de contexto + predição
-                window_df = group_df.iloc[i:pred_end].copy()
-                
-                # Aplicar normalização por janela (BOOST.MD)
-                if self.config.window_normalization:
-                    window_df = self._apply_window_normalization(window_df, price_volume_fields)
-                
-                # Separar contexto e target
-                context_data = window_df.iloc[:context_len]
-                target_data = window_df.iloc[context_len:]
-                
-                # Construir features finais
-                feature_matrix = self._build_feature_matrix(context_data, price_volume_fields, static_fields)
-                target_vector = target_data['close'].values  # Predizer close price
-                
-                # Metadados (não usados em treinamento anônimo)
-                metadata = {
-                    'original_asset': window_df['_original_asset'].iloc[0] if '_original_asset' in window_df else 'unknown',
-                    'sequence_id': window_df['_sequence_id'].iloc[0] if '_sequence_id' in window_df else f'seq_{len(sequences)}',
-                    'start_time': window_df['open_time'].iloc[0] if 'open_time' in window_df else None,
-                    'end_time': window_df['open_time'].iloc[-1] if 'open_time' in window_df else None
-                }
-                
-                sequences.append({
-                    'target': feature_matrix,  # [context_len, n_features] - input do modelo
-                    'future_target': target_vector,  # [pred_len] - ground truth
-                    'start': context_data['open_time'].iloc[0] if 'open_time' in context_data else pd.Timestamp.now(),
-                    'freq': '1min',
-                    'metadata': metadata
-                })
+        # Extract metadata columns
+        sequence_ids = df['_sequence_id'].values
+        assets = df['_original_asset'].values
+        timestamps = df['open_time'].values
+        
+        # Create sequences with vectorized operations
+        min_sequence_length = self.config.context_length + self.config.prediction_length
+        
+        for start_idx in range(0, total_len - min_sequence_length + 1, step_size):
+            end_idx = start_idx + min_sequence_length
+            
+            # Extract sequence efficiently
+            sequence_features = features_matrix[start_idx:end_idx]
+            
+            # Split into context and target
+            context_features = sequence_features[:self.config.context_length]
+            target_features = sequence_features[self.config.context_length:]
+            
+            # Create sequence dictionary
+            sequence = {
+                "target": context_features[:, 0:1],  # Use first feature column as target (close price)
+                "feat_dynamic_real": context_features,
+                "feat_static_cat": [0],  # Anonymous training - no asset ID
+                "sequence_id": sequence_ids[start_idx],
+                "asset": assets[start_idx] if not self.config.anonymous_training else "unified",
+                "start_time": timestamps[start_idx].isoformat(),
+                "end_time": timestamps[end_idx-1].isoformat()
+            }
+            
+            sequences.append(sequence)
         
         print(f"   ✅ Criadas {len(sequences)} sequências")
         return sequences
-    
-    def _group_sequences(self, df: pd.DataFrame) -> List[pd.DataFrame]:
-        """Agrupa dados em sequências contínuas por ativo"""
-        if '_original_asset' not in df.columns:
-            return [df]
         
-        groups = []
-        for asset in df['_original_asset'].unique():
-            asset_df = df[df['_original_asset'] == asset].copy()
-            
-            # Detectar quebras temporais (gaps > 5 minutos)
-            if 'open_time' in asset_df.columns:
-                time_diffs = asset_df['open_time'].diff()
-                gap_mask = time_diffs > pd.Timedelta(minutes=5)
-                gap_indices = asset_df.index[gap_mask].tolist()
-                
-                # Dividir em grupos contínuos
-                start_idx = 0
-                for gap_idx in gap_indices + [len(asset_df)]:
-                    if gap_idx - start_idx >= self.config.min_sequence_length:
-                        groups.append(asset_df.iloc[start_idx:gap_idx])
-                    start_idx = gap_idx
-            else:
-                groups.append(asset_df)
-        
-        return groups
-    
-    def _apply_window_normalization(
-        self, 
-        window_df: pd.DataFrame, 
-        price_volume_fields: List[str]
-    ) -> pd.DataFrame:
+    def _get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """
-        Aplica normalização por janela: (valor[t] / valor[t=0]) - 1 (BOOST.MD)
-        Foca o modelo na forma do padrão, não na escala absoluta
+        Retorna lista ordenada de features para treino
+        Mantém compatibilidade com uni2ts e ordem determinística
         """
-        normalized_df = window_df.copy()
+        # Base numerical features
+        base_features = []
+        for col in self.numerical_fields:
+            if self.config.window_normalization and f"{col}_norm" in df.columns:
+                base_features.append(f"{col}_norm")
+            elif col in df.columns:
+                base_features.append(col)
         
-        for field in price_volume_fields:
-            if field in normalized_df.columns:
-                values = normalized_df[field].values
-                
-                # Evitar divisão por zero
-                first_value = values[0]
-                if first_value != 0 and not np.isnan(first_value):
-                    normalized_values = (values / first_value) - 1
-                    normalized_df[field] = normalized_values
-                else:
-                    # Se primeiro valor é 0 ou NaN, usar diferenças percentuais
-                    normalized_df[field] = normalized_df[field].pct_change().fillna(0)
+        # Add technical features in consistent order
+        technical_features = sorted([col for col in self.technical_fields if col in df.columns])
         
-        return normalized_df
-    
-    def _build_feature_matrix(
-        self, 
-        context_data: pd.DataFrame,
-        price_volume_fields: List[str],
-        static_fields: List[str]
-    ) -> np.ndarray:
-        """Constrói matriz de features para o modelo"""
+        # Add cyclical features in consistent order  
+        cyclical_features = sorted([col for col in self.cyclical_fields if col in df.columns])
         
-        feature_columns = []
+        # Combine in priority order
+        all_features = base_features + technical_features + cyclical_features
         
-        # 1. Campos de preço/volume (normalizados)
-        for field in price_volume_fields:
-            if field in context_data.columns:
-                feature_columns.append(context_data[field].values)
+        # Validate all features exist
+        existing_features = [col for col in all_features if col in df.columns]
+        missing_features = set(all_features) - set(existing_features)
         
-        # 2. Features estáticas (cíclicas, técnicas)
-        for field in static_fields:
-            if field in context_data.columns:
-                feature_columns.append(context_data[field].values)
+        if missing_features:
+            print(f"   ⚠️ Features faltando: {missing_features}")
         
-        # Empilhar features
-        if feature_columns:
-            feature_matrix = np.column_stack(feature_columns)
-        else:
-            # Fallback: apenas close price normalizado
-            feature_matrix = context_data['close'].values.reshape(-1, 1)
+        return existing_features
         
-        # Tratar NaNs
-        feature_matrix = np.nan_to_num(feature_matrix, nan=0.0)
+    def _create_hf_dataset(self, sequences: List[dict], split: str) -> Dataset:
+        """
+        Converte sequências para formato uni2ts compatível
+        Usa schema otimizado para time series forecasting
+        """
+        print(f"🏗️ Criando dataset HuggingFace para {split}...")
         
-        return feature_matrix.astype(np.float32)
-    
-    def _split_data(self, sequences: List[Dict]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Split treino/validação/teste temporal"""
+        # Converter para formato uni2ts padrão
+        formatted_data = []
         
-        # Ordenar por timestamp se disponível
-        sequences_with_time = [(seq, seq['start']) for seq in sequences if seq['start'] is not None]
-        sequences_without_time = [seq for seq in sequences if seq['start'] is None]
+        for seq in sequences:
+            # Formato compatível com uni2ts DataLoader
+            formatted_seq = {
+                "target": seq["target"].flatten().tolist(),  # Time series values
+                "feat_dynamic_real": seq["feat_dynamic_real"].tolist(),  # Dynamic features
+                "feat_static_cat": seq["feat_static_cat"],  # Static categorical features
+                "start": seq["start_time"],  # Start timestamp
+                "item_id": seq["sequence_id"] if not self.config.anonymous_training else f"unified_{len(formatted_data)}"
+            }
+            formatted_data.append(formatted_seq)
         
-        if sequences_with_time:
-            # Split temporal: 60% treino, 20% validação, 20% teste
-            sequences_with_time.sort(key=lambda x: x[1])
-            total_len = len(sequences_with_time)
-            train_split = int(total_len * 0.6)
-            val_split = int(total_len * 0.8)
-            
-            train_sequences = [seq for seq, _ in sequences_with_time[:train_split]]
-            val_sequences = [seq for seq, _ in sequences_with_time[train_split:val_split]]
-            test_sequences = [seq for seq, _ in sequences_with_time[val_split:]]
-        else:
-            # Split aleatório se não houver timestamps
-            np.random.shuffle(sequences)
-            total_len = len(sequences)
-            train_split = int(total_len * 0.6)
-            val_split = int(total_len * 0.8)
-            
-            train_sequences = sequences[:train_split]
-            val_sequences = sequences[train_split:val_split]
-            test_sequences = sequences[val_split:]
-        
-        # Adicionar sequências sem timestamp ao treino
-        train_sequences.extend(sequences_without_time)
-        
-        return train_sequences, val_sequences, test_sequences
-    
-    def _create_hf_dataset(self, sequences: List[Dict], split: str) -> Dataset:
-        """Converte sequências para formato HuggingFace Dataset"""
-        
-        if not sequences:
-            raise ValueError(f"Nenhuma sequência disponível para split {split}")
-        
-        # Extrair dados
-        targets = [seq['target'] for seq in sequences]
-        future_targets = [seq['future_target'] for seq in sequences]
-        starts = [seq['start'] for seq in sequences]
-        freqs = [seq['freq'] for seq in sequences]
-        
-        # Schema HuggingFace
-        n_features = targets[0].shape[1] if len(targets[0].shape) > 1 else 1
-        
-        features = Features({
-            'target': Sequence(Sequence(Value('float32'))),  # [context_len, n_features]
-            'future_target': Sequence(Value('float32')),     # [pred_len]
-            'start': Value('timestamp[s]'),
-            'freq': Value('string'),
-            # NOTA: item_id removido intencionalmente para anonimização (BOOST.MD)
+        # Schema otimizado para uni2ts
+        features_schema = Features({
+            "target": Sequence(Value("float32")),
+            "feat_dynamic_real": Sequence(Sequence(Value("float32"))),
+            "feat_static_cat": Sequence(Value("int64")),
+            "start": Value("string"),
+            "item_id": Value("string")
         })
         
-        # Converter para formato correto
-        dataset_dict = {
-            'target': [target.tolist() for target in targets],
-            'future_target': [future.tolist() for future in future_targets],
-            'start': [int(start.timestamp()) if start else 0 for start in starts],
-            'freq': freqs
-        }
+        # Criar dataset com cache otimizado
+        hf_dataset = Dataset.from_list(
+            formatted_data,
+            features=features_schema
+        )
         
-        # Criar dataset
-        dataset = Dataset.from_dict(dataset_dict, features=features)
-        
-        return dataset
+        print(f"   ✅ Dataset {split}: {len(hf_dataset)} sequências, {hf_dataset.num_columns} colunas")
+        return hf_dataset
     
     def get_feature_info(self) -> Dict:
-        """Retorna informações sobre features construídas"""
-        info = {
-            'price_volume_fields': self.candle_fields,
-            'cyclical_features': ['minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'weekday_sin', 'weekday_cos'],
-            'technical_features': ['price_return', 'volume_return', 'volatility_5m', 'volatility_15m', 'vwap', 'spread_ratio', 'volume_ratio'],
+        """Retorna informações detalhadas sobre features para debugging/monitoring"""
+        return {
+            'numerical_fields': self.numerical_fields,
+            'technical_fields': sorted(list(self.technical_fields)),
+            'cyclical_fields': sorted(list(self.cyclical_fields)),
+            'total_features': len(self.numerical_fields) + len(self.technical_fields) + len(self.cyclical_fields),
             'normalization': 'window_based' if self.config.window_normalization else 'none',
             'context_length': self.config.context_length,
             'prediction_length': self.config.prediction_length,
-            'anonymous_training': self.config.anonymous_training
+            'anonymous_training': self.config.anonymous_training,
+            'dtype': self.config.dtype,
+            'unified_dataset': self.config.unified_dataset,
+            'target_assets': self.config.target_assets
         }
-        return info
 
     def load_dataset(self, transform_map: dict = None) -> Dataset:
         """
-        Implementação do método abstrato da classe base.
-        Carrega o dataset de treinamento com transformações aplicadas.
+        Implementação padrão uni2ts da classe base DatasetBuilder
         
         Args:
-            transform_map: Mapa de transformações a aplicar (opcional)
+            transform_map: Mapa de transformações (opcional, uni2ts padrão)
             
         Returns:
-            Dataset de treinamento carregado
+            Dataset de treinamento pronto para DataLoader
         """
         return self.build_dataset(split="train")
+    
+    def validate_config(self, check_data_path: bool = True) -> bool:
+        """
+        Valida configuração antes do build
+        
+        Args:
+            check_data_path: Se deve validar existência do data_path (False para testes)
+        """
+        try:
+            # Validar data_path existe (opcional para testes)
+            if check_data_path and not self.data_path.exists():
+                raise ValueError(f"Data path não encontrado: {self.data_path}")
+            elif not check_data_path:
+                print(f"⚠️ Pulando validação de data_path (modo teste)")
+            
+            # Validar target_assets não vazio
+            if not self.config.target_assets:
+                raise ValueError("Lista target_assets não pode estar vazia")
+            
+            # Validar context_length vs prediction_length
+            if self.config.context_length < self.config.prediction_length:
+                print(f"⚠️ Context length ({self.config.context_length}) < prediction length ({self.config.prediction_length})")
+            
+            # Validar numerical fields
+            if not self.numerical_fields:
+                raise ValueError("Nenhum campo numérico definido")
+            
+            print("✅ Configuração validada com sucesso")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Erro na validação: {e}")
+            return False
     
     def build_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:
         """
