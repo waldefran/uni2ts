@@ -2,11 +2,18 @@
 Crypto Dataset Builder SOTA - Dataset Unificado e Anônimo
 Implementa todas as melhorias do BOOST.MD para estado da arte
 
+FILOSOFIA SOTA: "TUDO JÁ ESTÁ NO PREÇO"
+- Usar apenas dados essenciais da Binance (OHLCV + metadados)
+- Features temporais cíclicas para contexto
+- Minimal feature engineering - deixar o modelo aprender padrões
+- Foco em qualidade dos dados, não quantidade de features
+
 UPGRADE BOOST.MD implementado:
 - Dataset unificado: todos os ativos em um só dataset
 - Anonimização: remove item_id durante treinamento
 - Normalização por janela: (valor[t] / valor[t=0]) - 1
 - Features cíclicas explícitas: sin/cos para minute, hour, weekday
+- Features técnicas essenciais: apenas returns e ratios básicos
 - Compatível com Moirai-MoE architecture
 """
 
@@ -42,14 +49,21 @@ class CryptoConfig:
 
 class CryptoDatasetBuilder(DatasetBuilder):
     """
-    Builder SOTA para dados de criptomoedas com todas as melhorias do BOOST.MD
+    Builder SOTA para dados de criptomoedas com filosofia "Tudo já está no preço"
     
     Features implementadas:
     1. Unificação: Todos os ativos em um dataset único
     2. Anonimização: Remove item_id para forçar aprendizado de padrões universais
     3. Normalização por janela: Foca na forma do padrão, não escala absoluta
-    4. Features cíclicas: Contexto temporal explícito
-    5. Compatibilidade Moirai-MoE: Formato otimizado para MoE
+    4. Features temporais cíclicas: Contexto temporal explícito
+    5. Features técnicas essenciais: Apenas returns e ratios básicos
+    6. Dados puros da Binance: OHLCV + volume + trades sem over-engineering
+    7. Compatibilidade Moirai-MoE: Formato otimizado para MoE
+    
+    Filosofia SOTA:
+    - Menos é mais: o modelo deve aprender padrões dos dados brutos
+    - Qualidade > Quantidade: poucos features bem escolhidos
+    - "Everything is in the price": não criar features redundantes
     """
     
     def __init__(
@@ -268,104 +282,77 @@ class CryptoDatasetBuilder(DatasetBuilder):
     
     def _add_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Adiciona features técnicas mantendo dtype consistente
+        Adiciona apenas features essenciais - SOTA simplificado
+        Princípio: "Tudo já está no preço" - usar apenas dados da Binance
         """
-        print("   📊 Adicionando features técnicas...")
+        print("   📊 Adicionando features essenciais (SOTA simplificado)...")
         
         df = df.copy()
         
-        # 1. Returns - sempre usar astype para garantir dtype correto
-        # Log returns são mais estáveis numericamente
-        df['returns'] = (np.log(df['close']) - np.log(df['close'].shift(1))).astype(self.config.dtype)
-        df['returns_vol'] = (np.log(df['volume']) - np.log(df['volume'].shift(1))).astype(self.config.dtype)
+        # APENAS features essenciais que complementam os dados da Binance
         
-        # Registrar returns como technical features
-        self.technical_fields.add('returns')
-        self.technical_fields.add('returns_vol')
+        # 1. Returns simples (informação de momentum básica)
+        df['price_return'] = (df['close'].pct_change()).astype(self.config.dtype)
+        df['volume_return'] = (df['volume'].pct_change()).astype(self.config.dtype)
         
-        # 2. Volatilidades
-        # Janelas curtas e longas para capturar diferentes horizontes
-        for window in [5, 10, 20]:
-            # Preço
-            col_name = f'volatility_{window}'
-            df[col_name] = df['returns'].rolling(window).std().astype(self.config.dtype)
-            self.technical_fields.add(col_name)
-            
-            # Volume
-            col_name = f'vol_volatility_{window}'
-            df[col_name] = df['returns_vol'].rolling(window).std().astype(self.config.dtype)
-            self.technical_fields.add(col_name)
+        # Registrar como technical features
+        self.technical_fields.add('price_return')
+        self.technical_fields.add('volume_return')
         
-        # 3. Médias Móveis e Bandas
-        for window in [5, 10, 20]:
-            # SMA
-            col_name = f'sma_{window}'
-            df[col_name] = df['close'].rolling(window).mean().astype(self.config.dtype)
-            self.technical_fields.add(col_name)
-            
-            # Bandas de Bollinger (normalized)
-            sma = df['close'].rolling(window).mean()
-            std = df['close'].rolling(window).std()
-            
-            col_name = f'bb_upper_{window}'
-            df[col_name] = ((df['close'] - (sma + 2 * std)) / std).astype(self.config.dtype)
-            self.technical_fields.add(col_name)
-            
-            col_name = f'bb_lower_{window}'
-            df[col_name] = ((df['close'] - (sma - 2 * std)) / std).astype(self.config.dtype)
-            self.technical_fields.add(col_name)
+        # 2. Volume-price relationship (única relação não capturada no preço puro)
+        df['volume_price_ratio'] = (df['volume'] / df['close']).astype(self.config.dtype)
+        self.technical_fields.add('volume_price_ratio')
         
-        # 4. Range features
-        df['high_low_range'] = ((df['high'] - df['low']) / df['low']).astype(self.config.dtype)
-        self.technical_fields.add('high_low_range')
+        # 3. Intraday range (informação de volatilidade intraday)
+        df['high_low_ratio'] = ((df['high'] - df['low']) / df['close']).astype(self.config.dtype)
+        self.technical_fields.add('high_low_ratio')
         
-        df['close_open_range'] = ((df['close'] - df['open']) / df['open']).astype(self.config.dtype)  
-        self.technical_fields.add('close_open_range')
-        
-        # Preencher NaN com 0 e inf com valores grandes mas finitos
-        df = df.replace([np.inf, -np.inf], np.finfo(self.config.dtype).max)
+        # Tratar NaN e inf de forma simples
+        df = df.replace([np.inf, -np.inf], 0)
         df = df.fillna(0)
         
-        print(f"   ✅ Features técnicas criadas: {len(self.technical_fields)} campos")
+        print(f"   ✅ Features essenciais criadas: {len(self.technical_fields)} campos SOTA")
+        print(f"      📋 Lista: {sorted(self.technical_fields)}")
         
         return df
         
     def _apply_window_normalization(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Aplica normalização por janela (valor[t] / valor[t=0]) - 1
-        Mantém dtype consistente
+        Aplica normalização por janela APENAS nos dados essenciais da Binance
+        Princípio SOTA: normalizar apenas preços/volumes, não features derivadas
         """
-        print("   📈 Aplicando normalização por janela...")
+        print("   📈 Aplicando normalização por janela (apenas dados Binance essenciais)...")
         
         df = df.copy()
         window_size = self.config.context_length
         
-        # Lista de colunas para normalizar
-        cols_to_normalize = (
-            list(self.numerical_fields) + 
-            list(self.technical_fields) +
-            list(self.cyclical_fields)
-        )
+        # APENAS dados essenciais da Binance para normalização
+        essential_price_fields = ['open', 'high', 'low', 'close']
+        essential_volume_fields = ['volume', 'quote_asset_volume']
         
-        # Remover colunas que já são normalizadas ou não devem ser normalizadas
-        cols_to_normalize = [
-            col for col in cols_to_normalize 
-            if col in df.columns and 
-            not any(x in col for x in ['_sin', '_cos', 'returns', 'volatility'])
-        ]
+        # Normalizar preços (mais importante)
+        for col in essential_price_fields:
+            if col in df.columns:
+                # Normalização por janela: (valor[t] / valor[t=0]) - 1
+                ref_values = df[col].rolling(window_size, min_periods=1).apply(
+                    lambda x: x.iloc[0] if len(x) > 0 else x.iloc[-1]
+                )
+                df[f"{col}_norm"] = ((df[col] / ref_values) - 1).astype(self.config.dtype)
+                print(f"      ✅ Normalizado: {col} -> {col}_norm")
         
-        for col in cols_to_normalize:
-            # Usar rolling para pegar o primeiro valor de cada janela
-            ref_values = df[col].rolling(window_size, min_periods=1).apply(
-                lambda x: x.iloc[0] if len(x) > 0 else x.iloc[-1]
-            )
-            
-            # Aplicar normalização mantendo dtype
-            df[f"{col}_norm"] = ((df[col] / ref_values) - 1).astype(self.config.dtype)
-            
-            # Remover coluna original se não for uma das features principais
-            if col not in self.numerical_fields:
-                df = df.drop(columns=[col])
+        # Normalizar volumes (menos crítico, mas útil)
+        for col in essential_volume_fields:
+            if col in df.columns:
+                ref_values = df[col].rolling(window_size, min_periods=1).apply(
+                    lambda x: x.iloc[0] if len(x) > 0 else x.iloc[-1]
+                )
+                df[f"{col}_norm"] = ((df[col] / ref_values) - 1).astype(self.config.dtype)
+                print(f"      ✅ Normalizado: {col} -> {col}_norm")
+        
+        # NÃO normalizar features técnicas (já são ratios/returns normalizados)
+        # NÃO normalizar features cíclicas (já são sin/cos normalizados)
+        
+        print(f"   ✅ Normalização SOTA aplicada apenas em dados essenciais")
         
         return df
         
@@ -466,32 +453,50 @@ class CryptoDatasetBuilder(DatasetBuilder):
         
     def _get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """
-        Retorna lista ordenada de features para treino
-        Mantém compatibilidade com uni2ts e ordem determinística
+        Retorna lista ordenada de features SOTA simplificadas
+        Foco em dados essenciais da Binance + contexto temporal
         """
-        # Base numerical features
-        base_features = []
-        for col in self.numerical_fields:
-            if self.config.window_normalization and f"{col}_norm" in df.columns:
-                base_features.append(f"{col}_norm")
-            elif col in df.columns:
-                base_features.append(col)
+        feature_list = []
         
-        # Add technical features in consistent order
-        technical_features = sorted([col for col in self.technical_fields if col in df.columns])
+        # 1. Dados essenciais da Binance (normalizados se ativo)
+        essential_fields = ['open', 'high', 'low', 'close', 'volume', 'quote_asset_volume']
         
-        # Add cyclical features in consistent order  
+        for field in essential_fields:
+            if self.config.window_normalization and f"{field}_norm" in df.columns:
+                feature_list.append(f"{field}_norm")
+            elif field in df.columns:
+                feature_list.append(field)
+        
+        # 2. Features técnicas essenciais (apenas as 4 criadas)
+        essential_technical = ['price_return', 'volume_return', 'volume_price_ratio', 'high_low_ratio']
+        for field in essential_technical:
+            if field in df.columns:
+                feature_list.append(field)
+        
+        # 3. Features temporais cíclicas (contexto temporal)
         cyclical_features = sorted([col for col in self.cyclical_fields if col in df.columns])
+        feature_list.extend(cyclical_features)
         
-        # Combine in priority order
-        all_features = base_features + technical_features + cyclical_features
+        # 4. Adicionar outros campos numéricos da Binance se existirem
+        other_binance_fields = ['number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume']
+        for field in other_binance_fields:
+            if field in df.columns:
+                if self.config.window_normalization and f"{field}_norm" in df.columns:
+                    feature_list.append(f"{field}_norm")
+                else:
+                    feature_list.append(field)
         
-        # Validate all features exist
-        existing_features = [col for col in all_features if col in df.columns]
-        missing_features = set(all_features) - set(existing_features)
+        # Validar existência
+        existing_features = [col for col in feature_list if col in df.columns]
+        missing_features = set(feature_list) - set(existing_features)
         
         if missing_features:
-            print(f"   ⚠️ Features faltando: {missing_features}")
+            print(f"   ⚠️ Features esperadas mas não encontradas: {missing_features}")
+        
+        print(f"   📊 Features SOTA selecionadas: {len(existing_features)}")
+        print(f"      💰 Dados Binance: {[f for f in existing_features if any(x in f for x in essential_fields)]}")
+        print(f"      📈 Features técnicas: {[f for f in existing_features if f in essential_technical]}")
+        print(f"      🕐 Features temporais: {[f for f in existing_features if '_sin' in f or '_cos' in f]}")
         
         return existing_features
         
