@@ -81,7 +81,7 @@ class CryptoDatasetBuilder(DatasetBuilder):
             'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume'
         ]
         
-        self.datetime_fields = ['open_time']
+        self.datetime_fields = ['open_time', 'close_time']  # Ambos são datetime
         self.technical_fields: Set[str] = set()  # Será preenchido durante feature engineering
         self.cyclical_fields: Set[str] = set()   # Será preenchido durante feature engineering
         
@@ -159,6 +159,8 @@ class CryptoDatasetBuilder(DatasetBuilder):
             # Garantir datetime
             if 'open_time' in df.columns:
                 df['open_time'] = pd.to_datetime(df['open_time'])
+            if 'close_time' in df.columns:
+                df['close_time'] = pd.to_datetime(df['close_time'])
             
             # Validar campos obrigatórios
             missing_fields = [f for f in self.numerical_fields if f not in df.columns]
@@ -233,15 +235,47 @@ class CryptoDatasetBuilder(DatasetBuilder):
         if self.config.window_normalization:
             df_enhanced = self._apply_window_normalization(df_enhanced)
         
+        # 4. Remover campos desnecessários ANTES da validação de tipos
+        # Remover close_time se existir (desnecessário, temos open_time)
+        if 'close_time' in df_enhanced.columns:
+            df_enhanced = df_enhanced.drop(columns=['close_time'])
+            print("   🗑️ Campo close_time removido (desnecessário)")
+        
+        # Remover outros campos temporais auxiliares que possam ter sobrado
+        temp_cols_to_remove = ['_minute', '_hour', '_weekday']
+        existing_temp_cols = [col for col in temp_cols_to_remove if col in df_enhanced.columns]
+        if existing_temp_cols:
+            df_enhanced = df_enhanced.drop(columns=existing_temp_cols)
+            print(f"   🗑️ Campos temporais auxiliares removidos: {existing_temp_cols}")
+        
         # Validar tipos de dados após feature engineering
         print("\n📊 Validando tipos de dados após feature engineering:")
+        
+        # Campos que devem ser excluídos da conversão para float
+        exclude_fields = ['open_time', 'close_time', '_original_asset', '_sequence_id', 
+                         '_minute', '_hour', '_weekday']  # Campos temporais auxiliares
+        
         for col in df_enhanced.columns:
-            if col not in ['open_time', '_original_asset', '_sequence_id']:
-                if df_enhanced[col].dtype != self.config.dtype:
+            # Pular campos datetime e auxiliares
+            if col in exclude_fields:
+                print(f"   ⏩ Pulando {col}: {df_enhanced[col].dtype} (campo auxiliar/datetime)")
+                continue
+            
+            # Verificar se é campo datetime por tipo (proteção adicional)
+            if pd.api.types.is_datetime64_any_dtype(df_enhanced[col]):
+                print(f"   ⏩ Pulando {col}: {df_enhanced[col].dtype} (campo datetime detectado)")
+                continue
+                
+            # Validar e converter apenas campos numéricos
+            if df_enhanced[col].dtype != self.config.dtype:
+                try:
                     print(f"   ⚠️ Convertendo {col} de {df_enhanced[col].dtype} para {self.config.dtype}")
                     df_enhanced[col] = df_enhanced[col].astype(self.config.dtype)
-                else:
-                    print(f"   ✅ {col}: {df_enhanced[col].dtype}")
+                except (TypeError, ValueError) as e:
+                    print(f"   ❌ Erro convertendo {col}: {e}")
+                    print(f"      Mantendo tipo original: {df_enhanced[col].dtype}")
+            else:
+                print(f"   ✅ {col}: {df_enhanced[col].dtype}")
         
         return df_enhanced
         
