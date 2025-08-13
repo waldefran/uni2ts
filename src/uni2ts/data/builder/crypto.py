@@ -436,14 +436,16 @@ class CryptoDatasetBuilder(DatasetBuilder):
             target_features = sequence_features[self.config.context_length:]
             
             # Create sequence dictionary
+            # Convert numpy.datetime64 to datetime for isoformat()
+            start_timestamp = pd.to_datetime(timestamps[start_idx]).to_pydatetime()
+            
             sequence = {
                 "target": context_features[:, 0:1],  # Use first feature column as target (close price)
                 "feat_dynamic_real": context_features,
                 "feat_static_cat": [0],  # Anonymous training - no asset ID
                 "sequence_id": sequence_ids[start_idx],
                 "asset": assets[start_idx] if not self.config.anonymous_training else "unified",
-                "start_time": timestamps[start_idx].isoformat(),
-                "end_time": timestamps[end_idx-1].isoformat()
+                "start_time": start_timestamp.isoformat()
             }
             
             sequences.append(sequence)
